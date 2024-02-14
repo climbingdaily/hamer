@@ -146,3 +146,9 @@ dmypy.json
 .pyre/
 /checkpoints/
 /data/
+
+
+.1.1.sh
+/example_data/
+/hamer_training_data
+*.ipynb
