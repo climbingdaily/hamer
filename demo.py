@@ -74,6 +74,7 @@ def main():
     img_paths = [img for end in args.file_type for img in Path(args.img_folder).glob(end)]
 
     # Iterate over all images in folder
+    pred_list = []
     for img_path in img_paths:
         img_cv2 = cv2.imread(str(img_path))
 
@@ -171,7 +172,7 @@ def main():
                 else:
                     final_img = np.concatenate([input_patch, regression_img], axis=1)
 
-                cv2.imwrite(os.path.join(args.out_folder, f'{img_fn}_{person_id}.png'), 255*final_img[:, :, ::-1])
+                #cv2.imwrite(os.path.join(args.out_folder, f'{img_fn}_{person_id}.png'), 255*final_img[:, :, ::-1])
 
                 # Add all verts and cams to list
                 verts = out['pred_vertices'][n].detach().cpu().numpy()
@@ -181,6 +182,17 @@ def main():
                 all_verts.append(verts)
                 all_cam_t.append(cam_t)
                 all_right.append(is_right)
+                pred_dict = {}
+                pred_dict['cam_t.full'] = cam_t
+                pred_dict['verts'] = verts
+                pred_dict['is_right'] = is_right
+                pred_dict['img_path'] = str(img_path)
+
+                fx = fy = float(scaled_focal_length.cpu().numpy())
+                cx, cy = img_size[n].cpu().detach().numpy() / 2
+                K = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]])
+                pred_dict['K'] = K
+                pred_list.append(pred_dict)
 
                 # Save all meshes to disk
                 if args.save_mesh:
@@ -203,6 +215,9 @@ def main():
             input_img_overlay = input_img[:,:,:3] * (1-cam_view[:,:,3:]) + cam_view[:,:,:3] * cam_view[:,:,3:]
 
             cv2.imwrite(os.path.join(args.out_folder, f'{img_fn}_all.jpg'), 255*input_img_overlay[:, :, ::-1])
+
+    torch.save(pred_list, 'out.pt')
+    pass
 
 if __name__ == '__main__':
     main()
