@@ -15,6 +15,91 @@ LIGHT_BLUE=(0.65098039,  0.74117647,  0.85882353)
 
 from vitpose_model import ViTPoseModel
 
+
+def to_xy_batch(x_homo):
+    assert isinstance(x_homo, (torch.FloatTensor, torch.cuda.FloatTensor))
+    assert x_homo.shape[2] == 3
+    assert len(x_homo.shape) == 3
+    batch_size = x_homo.shape[0]
+    num_pts = x_homo.shape[1]
+    x = torch.ones(batch_size, num_pts, 2, device=x_homo.device)
+    zz = x_homo[:, :, 2:3]
+    
+    
+    x = x_homo[:, :, :2] / zz
+    return x
+
+
+def project2d_batch(K, pts_cam):
+    """
+    K: (B, 3, 3)
+    pts_cam: (B, N, 3)
+    """
+
+    assert isinstance(K, (torch.FloatTensor, torch.cuda.FloatTensor))
+    assert isinstance(pts_cam, (torch.FloatTensor, torch.cuda.FloatTensor))
+    assert K.shape[1:] == (3, 3)
+    assert pts_cam.shape[2] == 3
+    assert len(pts_cam.shape) == 3
+    pts2d_homo = torch.bmm(K, pts_cam.permute(0, 2, 1)).permute(0, 2, 1)
+    pts2d = to_xy_batch(pts2d_homo)
+    return pts2d
+
+
+def reform_pred_list(pred_list):
+    im_paths = sorted(list(set([pred_dict['img_path'] for pred_dict in pred_list])))
+
+    verts_r = np.zeros((len(im_paths), 778, 3))*np.nan
+    verts_l = np.copy(verts_r)
+    
+    joints_r = np.zeros((len(im_paths), 21, 3))*np.nan
+    joints_l = np.copy(joints_r)
+
+
+    for pred_dict in pred_list:
+        is_right = bool(pred_dict['is_right'])
+
+        v3d_cam = pred_dict['verts']  + pred_dict['cam_t.full'][None, :]
+        j3d_cam = pred_dict['jts']  + pred_dict['cam_t.full'][None, :]
+
+        idx = im_paths.index(pred_dict['img_path'])
+
+        if is_right:
+            verts_r[idx] = v3d_cam
+            joints_r[idx] = j3d_cam
+        else:
+            verts_l[idx] = v3d_cam
+            joints_l[idx] = j3d_cam
+
+    verts_r = verts_r.astype(np.float32)
+    verts_l = verts_l.astype(np.float32)
+    joints_r = joints_r.astype(np.float32)
+    joints_l = joints_l.astype(np.float32)
+    
+    
+    K = torch.FloatTensor(pred_list[0]['K'])
+    joints_r = torch.FloatTensor(joints_r)
+    joints_l = torch.FloatTensor(joints_l)
+    j2d_r = project2d_batch(K[None, :, :].repeat(joints_r.shape[0], 1, 1), joints_r).numpy()
+    j2d_l = project2d_batch(K[None, :, :].repeat(joints_l.shape[0], 1, 1), joints_l).numpy()    
+
+    results_3d = {}
+    results_3d['v3d.right'] = verts_r
+    results_3d['v3d.left'] = verts_l
+    results_3d['j3d.right'] = joints_r
+    results_3d['j3d.left'] = joints_l
+    results_3d['im_paths'] = im_paths
+    results_3d['K'] = pred_list[0]['K']
+    
+    results_2d = {}
+    results_2d['j2d.right'] = j2d_r
+    results_2d['j2d.left'] = j2d_l
+    results_2d['im_paths'] = im_paths
+    
+    return results_3d, results_2d
+
+
+
 import json
 from typing import Dict, Optional
 
@@ -176,8 +261,11 @@ def main():
 
                 # Add all verts and cams to list
                 verts = out['pred_vertices'][n].detach().cpu().numpy()
+                jts = out['pred_keypoints_3d'][n].detach().cpu().numpy()
+                
                 is_right = batch['right'][n].cpu().numpy()
                 verts[:,0] = (2*is_right-1)*verts[:,0]
+                jts[:,0] = (2*is_right-1)*jts[:,0]
                 cam_t = pred_cam_t_full[n]
                 all_verts.append(verts)
                 all_cam_t.append(cam_t)
@@ -185,6 +273,7 @@ def main():
                 pred_dict = {}
                 pred_dict['cam_t.full'] = cam_t
                 pred_dict['verts'] = verts
+                pred_dict['jts'] = jts
                 pred_dict['is_right'] = is_right
                 pred_dict['img_path'] = str(img_path)
 
@@ -216,8 +305,15 @@ def main():
 
             cv2.imwrite(os.path.join(args.out_folder, f'{img_fn}_all.jpg'), 255*input_img_overlay[:, :, ::-1])
 
-    torch.save(pred_list, 'out.pt')
-    pass
+    import os.path as op
+    out_3d_p = op.join(args.img_folder, 'processed/v3d.hamer.npy')
+    out_2d_p = op.join(args.img_folder, 'processed/j2d.full.npy')
+    os.makedirs(op.dirname(out_3d_p), exist_ok=True)
+    results_3d, results_2d = reform_pred_list(pred_list)
+    np.save(out_3d_p, results_3d)
+    np.save(out_2d_p, results_2d)
+    print(f"Saved 3D results to {out_3d_p}")
+    print(f"Saved 2D results to {out_2d_p}")
 
 if __name__ == '__main__':
     main()
