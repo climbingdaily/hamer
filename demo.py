@@ -366,7 +366,7 @@ def main():
             cv2.imwrite(os.path.join(args.out_folder, f'{img_fn}_all.jpg'), 255*input_img_overlay[:, :, ::-1])
 
     import os.path as op
-    out_3d_p = op.join(args.img_folder, '../processed/v3d.hamer.npy')
+    out_3d_p = op.join(args.img_folder, '../processed/v3d.npy')
     out_2d_p = op.join(args.img_folder, '../processed/j2d.full.npy')
     # normalize paths
     out_3d_p = op.normpath(out_3d_p)
