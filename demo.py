@@ -14,6 +14,55 @@ from hamer.utils.renderer import Renderer, cam_crop_to_full
 LIGHT_BLUE=(0.65098039,  0.74117647,  0.85882353)
 
 from vitpose_model import ViTPoseModel
+from tqdm import tqdm
+
+def visualize_2d(results_2d):
+    from PIL import Image
+    import matplotlib.pyplot as plt
+    
+    j2d_r = results_2d['j2d.right']
+    j2d_l = results_2d['j2d.left']
+
+    v2d_r = results_2d['v2d.right']
+    v2d_l = results_2d['v2d.left']
+
+    im_paths = results_2d['im_paths']
+
+    print("Visualizing 2D keypoints")
+    for idx in tqdm(range(len(im_paths))):
+
+        im_p = im_paths[idx]
+        out_p = im_p.replace("/images/", '/processed/2d_keypoints/')
+
+        im = Image.open(im_p)
+
+        os.makedirs(os.path.dirname(out_p), exist_ok=True)
+
+        plt.figure(figsize=(10, 10))
+        plt.imshow(im)
+        plt.scatter(j2d_r[idx, :, 0], j2d_r[idx, :, 1], s=10)
+        plt.scatter(j2d_l[idx, :, 0], j2d_l[idx, :, 1], s=10)
+        plt.legend(['jts_r', 'jts_l'])
+        plt.savefig(out_p)
+        plt.close()
+
+    print("Visualizing 2D vertices")
+    for idx in tqdm(range(len(im_paths))):
+
+        im_p = im_paths[idx]
+        out_p = im_p.replace("/images/", '/processed/hpe_vis/')
+
+        im = Image.open(im_p)
+
+        os.makedirs(os.path.dirname(out_p), exist_ok=True)
+
+        plt.figure(figsize=(10, 10))
+        plt.imshow(im)
+        plt.scatter(v2d_r[idx, :, 0], v2d_r[idx, :, 1], s=1)
+        plt.scatter(v2d_l[idx, :, 0], v2d_l[idx, :, 1], s=1)
+        plt.legend(['mano_r', 'mano_l'])
+        plt.savefig(out_p)
+        plt.close()
 
 
 def to_xy_batch(x_homo):
@@ -80,6 +129,11 @@ def reform_pred_list(pred_list):
     K = torch.FloatTensor(pred_list[0]['K'])
     joints_r = torch.FloatTensor(joints_r)
     joints_l = torch.FloatTensor(joints_l)
+    verts_r = torch.FloatTensor(verts_r)
+    verts_l = torch.FloatTensor(verts_l)
+    
+    v2d_r = project2d_batch(K[None, :, :].repeat(verts_r.shape[0], 1, 1), verts_r).numpy()
+    v2d_l = project2d_batch(K[None, :, :].repeat(verts_l.shape[0], 1, 1), verts_l).numpy()
     j2d_r = project2d_batch(K[None, :, :].repeat(joints_r.shape[0], 1, 1), joints_r).numpy()
     j2d_l = project2d_batch(K[None, :, :].repeat(joints_l.shape[0], 1, 1), joints_l).numpy()    
 
@@ -92,6 +146,8 @@ def reform_pred_list(pred_list):
     results_3d['K'] = pred_list[0]['K']
     
     results_2d = {}
+    results_2d['v2d.right'] = v2d_r
+    results_2d['v2d.left'] = v2d_l
     results_2d['j2d.right'] = j2d_r
     results_2d['j2d.left'] = j2d_l
     results_2d['im_paths'] = im_paths
@@ -106,7 +162,7 @@ from typing import Dict, Optional
 def main():
     parser = argparse.ArgumentParser(description='HaMeR demo code')
     parser.add_argument('--checkpoint', type=str, default=DEFAULT_CHECKPOINT, help='Path to pretrained model checkpoint')
-    parser.add_argument('--img_folder', type=str, default='images', help='Folder with input images')
+    parser.add_argument('--seq_name', type=str, default='images', help='Folder with input images')
     parser.add_argument('--out_folder', type=str, default='out_demo', help='Output folder to save rendered results')
     parser.add_argument('--side_view', dest='side_view', action='store_true', default=False, help='If set, render side view also')
     parser.add_argument('--full_frame', dest='full_frame', action='store_true', default=True, help='If set, render all people together also')
@@ -117,6 +173,8 @@ def main():
     parser.add_argument('--file_type', nargs='+', default=['*.jpg', '*.png'], help='List of file extensions to consider')
 
     args = parser.parse_args()
+    
+    args.img_folder = f'../data/{args.seq_name}/images'
 
     # Download and load checkpoints
     download_models(CACHE_DIR_HAMER)
@@ -157,10 +215,12 @@ def main():
 
     # Get all demo images ends with .jpg or .png
     img_paths = [img for end in args.file_type for img in Path(args.img_folder).glob(end)]
+    assert len(img_paths) > 0, f"No images found in {args.img_folder}"
 
     # Iterate over all images in folder
+    print('Running inference on images')
     pred_list = []
-    for img_path in img_paths:
+    for img_path in tqdm(img_paths):
         img_cv2 = cv2.imread(str(img_path))
 
         # Detect humans in image
@@ -306,10 +366,14 @@ def main():
             cv2.imwrite(os.path.join(args.out_folder, f'{img_fn}_all.jpg'), 255*input_img_overlay[:, :, ::-1])
 
     import os.path as op
-    out_3d_p = op.join(args.img_folder, 'processed/v3d.hamer.npy')
-    out_2d_p = op.join(args.img_folder, 'processed/j2d.full.npy')
+    out_3d_p = op.join(args.img_folder, '../processed/v3d.hamer.npy')
+    out_2d_p = op.join(args.img_folder, '../processed/j2d.full.npy')
+    # normalize paths
+    out_3d_p = op.normpath(out_3d_p)
+    out_2d_p = op.normpath(out_2d_p)
     os.makedirs(op.dirname(out_3d_p), exist_ok=True)
     results_3d, results_2d = reform_pred_list(pred_list)
+    visualize_2d(results_2d)
     np.save(out_3d_p, results_3d)
     np.save(out_2d_p, results_2d)
     print(f"Saved 3D results to {out_3d_p}")
