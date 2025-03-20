@@ -21,7 +21,7 @@ from typing import Dict, Optional
 def main():
     parser = argparse.ArgumentParser(description='HaMeR demo code')
     parser.add_argument('--checkpoint', type=str, default=DEFAULT_CHECKPOINT, help='Path to pretrained model checkpoint')
-    parser.add_argument('--img_folder', type=str, default='images', help='Folder with input images')
+    parser.add_argument('--img_folder', type=str, default='/home/guest/Documents/Nymeria/20231222_s1_kenneth_fischer_act7_56uvqd/recording_head/imgs_1049_1990', help='Folder with input images')
     parser.add_argument('--out_folder', type=str, default='out_demo', help='Output folder to save rendered results')
     parser.add_argument('--side_view', dest='side_view', action='store_true', default=False, help='If set, render side view also')
     parser.add_argument('--full_frame', dest='full_frame', action='store_true', default=True, help='If set, render all people together also')
@@ -32,10 +32,20 @@ def main():
     parser.add_argument('--file_type', nargs='+', default=['*.jpg', '*.png'], help='List of file extensions to consider')
 
     args = parser.parse_args()
+    if not os.path.exists(args.img_folder):
+        args.img_folder = os.path.join(
+            str(Path(__file__).resolve().parents[1]), 
+            'data', args.img_folder, 'build', 'image')
+        print('No images found in the specified folder.')
+        print(f'Images will be searched in {args.img_folder}')
 
-    # Download and load checkpoints
+    # Download and load checkpoints 
     download_models(CACHE_DIR_HAMER)
-    model, model_cfg = load_hamer(args.checkpoint)
+    cp_path = os.path.abspath(os.path.join(os.path.dirname(__file__), args.checkpoint))
+    if not os.path.exists(cp_path):
+        print(f'Checkpoint {cp_path} not found. Please download it first.')
+        exit(1)
+    model, model_cfg = load_hamer(cp_path)
 
     # Setup HaMeR model
     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
@@ -203,6 +213,25 @@ def main():
             input_img_overlay = input_img[:,:,:3] * (1-cam_view[:,:,3:]) + cam_view[:,:,:3] * cam_view[:,:,3:]
 
             cv2.imwrite(os.path.join(args.out_folder, f'{img_fn}_all.jpg'), 255*input_img_overlay[:, :, ::-1])
+
+def draw_bbox(image_path, bboxes):
+    # 读取图片
+    image = cv2.imread(image_path)
+    
+    # 确保图片正确加载
+    if image is None:
+        print(f"Error: 无法加载图片 {image_path}")
+        return
+
+    # 解析 bbox 并转换为整数
+    for bbox in bboxes:
+        x1, y1, x2, y2 = map(int, bbox)
+
+        # 绘制矩形框
+        cv2.rectangle(image, (x1, y1), (x2, y2), (0, 255, 0), 2)
+
+    # 显示图片
+    cv2.imshow("Image with BBox", image)
 
 if __name__ == '__main__':
     main()

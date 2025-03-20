@@ -1,9 +1,9 @@
 import os
 from typing import Dict
 from yacs.config import CfgNode as CN
+from pathlib import Path
 
-CACHE_DIR_HAMER = "./_DATA"
-
+CACHE_DIR_HAMER = str(Path(__file__).parent.parent.parent / "_DATA")
 def to_lower(x: Dict) -> Dict:
     """
     Convert all dictionary keys to lowercase
