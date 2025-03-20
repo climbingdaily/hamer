@@ -32,7 +32,7 @@ class MANO(smplx.MANOLayer):
         mano_output = super(MANO, self).forward(*args, **kwargs)
         extra_joints = torch.index_select(mano_output.vertices, 1, self.extra_joints_idxs)
         joints = torch.cat([mano_output.joints, extra_joints], dim=1)
-        joints = joints[:, self.joint_map, :]
+        # joints = joints[:, self.joint_map, :] # keep MANO joint order
         if hasattr(self, 'joint_regressor_extra'):
             extra_joints = vertices2joints(self.joint_regressor_extra, mano_output.vertices)
             joints = torch.cat([joints, extra_joints], dim=1)

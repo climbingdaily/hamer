@@ -15,6 +15,147 @@ from hamer.utils.renderer import Renderer, cam_crop_to_full
 LIGHT_BLUE=(0.65098039,  0.74117647,  0.85882353)
 
 from vitpose_model import ViTPoseModel
+from tqdm import tqdm
+
+def visualize_2d(results_2d):
+    from PIL import Image
+    import matplotlib.pyplot as plt
+    
+    j2d_r = results_2d['j2d.right']
+    j2d_l = results_2d['j2d.left']
+
+    v2d_r = results_2d['v2d.right']
+    v2d_l = results_2d['v2d.left']
+
+    im_paths = results_2d['im_paths']
+
+    print("Visualizing 2D keypoints")
+    for idx in tqdm(range(len(im_paths))):
+
+        im_p = im_paths[idx]
+        out_p = im_p.replace("/images/", '/processed/2d_keypoints/')
+
+        im = Image.open(im_p)
+
+        os.makedirs(os.path.dirname(out_p), exist_ok=True)
+
+        plt.figure(figsize=(10, 10))
+        plt.imshow(im)
+        plt.scatter(j2d_r[idx, :, 0], j2d_r[idx, :, 1], s=10)
+        plt.scatter(j2d_l[idx, :, 0], j2d_l[idx, :, 1], s=10)
+        plt.legend(['jts_r', 'jts_l'])
+        plt.savefig(out_p)
+        plt.close()
+
+    print("Visualizing 2D vertices")
+    for idx in tqdm(range(len(im_paths))):
+
+        im_p = im_paths[idx]
+        out_p = im_p.replace("/images/", '/processed/hpe_vis/')
+
+        im = Image.open(im_p)
+
+        os.makedirs(os.path.dirname(out_p), exist_ok=True)
+
+        plt.figure(figsize=(10, 10))
+        plt.imshow(im)
+        plt.scatter(v2d_r[idx, :, 0], v2d_r[idx, :, 1], s=1)
+        plt.scatter(v2d_l[idx, :, 0], v2d_l[idx, :, 1], s=1)
+        plt.legend(['mano_r', 'mano_l'])
+        plt.savefig(out_p)
+        plt.close()
+
+
+def to_xy_batch(x_homo):
+    assert isinstance(x_homo, (torch.FloatTensor, torch.cuda.FloatTensor))
+    assert x_homo.shape[2] == 3
+    assert len(x_homo.shape) == 3
+    batch_size = x_homo.shape[0]
+    num_pts = x_homo.shape[1]
+    x = torch.ones(batch_size, num_pts, 2, device=x_homo.device)
+    zz = x_homo[:, :, 2:3]
+    
+    
+    x = x_homo[:, :, :2] / zz
+    return x
+
+
+def project2d_batch(K, pts_cam):
+    """
+    K: (B, 3, 3)
+    pts_cam: (B, N, 3)
+    """
+
+    assert isinstance(K, (torch.FloatTensor, torch.cuda.FloatTensor))
+    assert isinstance(pts_cam, (torch.FloatTensor, torch.cuda.FloatTensor))
+    assert K.shape[1:] == (3, 3)
+    assert pts_cam.shape[2] == 3
+    assert len(pts_cam.shape) == 3
+    pts2d_homo = torch.bmm(K, pts_cam.permute(0, 2, 1)).permute(0, 2, 1)
+    pts2d = to_xy_batch(pts2d_homo)
+    return pts2d
+
+
+def reform_pred_list(pred_list):
+    im_paths = sorted(list(set([pred_dict['img_path'] for pred_dict in pred_list])))
+
+    verts_r = np.zeros((len(im_paths), 778, 3))*np.nan
+    verts_l = np.copy(verts_r)
+    
+    joints_r = np.zeros((len(im_paths), 21, 3))*np.nan
+    joints_l = np.copy(joints_r)
+
+
+    for pred_dict in pred_list:
+        is_right = bool(pred_dict['is_right'])
+
+        v3d_cam = pred_dict['verts']  + pred_dict['cam_t.full'][None, :]
+        j3d_cam = pred_dict['jts']  + pred_dict['cam_t.full'][None, :]
+
+        idx = im_paths.index(pred_dict['img_path'])
+
+        if is_right:
+            verts_r[idx] = v3d_cam
+            joints_r[idx] = j3d_cam
+        else:
+            verts_l[idx] = v3d_cam
+            joints_l[idx] = j3d_cam
+
+    verts_r = verts_r.astype(np.float32)
+    verts_l = verts_l.astype(np.float32)
+    joints_r = joints_r.astype(np.float32)
+    joints_l = joints_l.astype(np.float32)
+    
+    
+    K = torch.FloatTensor(pred_list[0]['K'])
+    joints_r = torch.FloatTensor(joints_r)
+    joints_l = torch.FloatTensor(joints_l)
+    verts_r = torch.FloatTensor(verts_r)
+    verts_l = torch.FloatTensor(verts_l)
+    
+    v2d_r = project2d_batch(K[None, :, :].repeat(verts_r.shape[0], 1, 1), verts_r).numpy()
+    v2d_l = project2d_batch(K[None, :, :].repeat(verts_l.shape[0], 1, 1), verts_l).numpy()
+    j2d_r = project2d_batch(K[None, :, :].repeat(joints_r.shape[0], 1, 1), joints_r).numpy()
+    j2d_l = project2d_batch(K[None, :, :].repeat(joints_l.shape[0], 1, 1), joints_l).numpy()    
+
+    results_3d = {}
+    results_3d['v3d.right'] = verts_r
+    results_3d['v3d.left'] = verts_l
+    results_3d['j3d.right'] = joints_r
+    results_3d['j3d.left'] = joints_l
+    results_3d['im_paths'] = im_paths
+    results_3d['K'] = pred_list[0]['K']
+    
+    results_2d = {}
+    results_2d['v2d.right'] = v2d_r
+    results_2d['v2d.left'] = v2d_l
+    results_2d['j2d.right'] = j2d_r
+    results_2d['j2d.left'] = j2d_l
+    results_2d['im_paths'] = im_paths
+    
+    return results_3d, results_2d
+
+
 
 import json
 from typing import Dict, Optional
@@ -23,6 +164,7 @@ def main():
     parser = argparse.ArgumentParser(description='HaMeR demo code')
     parser.add_argument('--checkpoint', type=str, default=DEFAULT_CHECKPOINT, help='Path to pretrained model checkpoint')
     parser.add_argument('--img_folder', type=str, default='/home/guest/Documents/Nymeria/20231222_s1_kenneth_fischer_act7_56uvqd/recording_head/imgs_1049_1990', help='Folder with input images')
+    parser.add_argument('--seq_name', type=str, default='images', help='Folder with input images')
     parser.add_argument('--out_folder', type=str, default='out_demo', help='Output folder to save rendered results')
     parser.add_argument('--side_view', dest='side_view', action='store_true', default=False, help='If set, render side view also')
     parser.add_argument('--full_frame', dest='full_frame', action='store_true', default=True, help='If set, render all people together also')
@@ -83,6 +225,7 @@ def main():
 
     # Get all demo images ends with .jpg or .png
     img_paths = [img for end in args.file_type for img in Path(args.img_folder).glob(end)]
+    assert len(img_paths) > 0, f"No images found in {args.img_folder}"
 
     # Iterate over all images in folder
     for i, img_path in enumerate(tqdm(img_paths, desc="Processing Images")):
@@ -182,16 +325,31 @@ def main():
                 else:
                     final_img = np.concatenate([input_patch, regression_img], axis=1)
 
-                cv2.imwrite(os.path.join(args.out_folder, f'{img_fn}_{person_id}.png'), 255*final_img[:, :, ::-1])
+                #cv2.imwrite(os.path.join(args.out_folder, f'{img_fn}_{person_id}.png'), 255*final_img[:, :, ::-1])
 
                 # Add all verts and cams to list
                 verts = out['pred_vertices'][n].detach().cpu().numpy()
+                jts = out['pred_keypoints_3d'][n].detach().cpu().numpy()
+                
                 is_right = batch['right'][n].cpu().numpy()
                 verts[:,0] = (2*is_right-1)*verts[:,0]
+                jts[:,0] = (2*is_right-1)*jts[:,0]
                 cam_t = pred_cam_t_full[n]
                 all_verts.append(verts)
                 all_cam_t.append(cam_t)
                 all_right.append(is_right)
+                pred_dict = {}
+                pred_dict['cam_t.full'] = cam_t
+                pred_dict['verts'] = verts
+                pred_dict['jts'] = jts
+                pred_dict['is_right'] = is_right
+                pred_dict['img_path'] = str(img_path)
+
+                fx = fy = float(scaled_focal_length.cpu().numpy())
+                cx, cy = img_size[n].cpu().detach().numpy() / 2
+                K = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]])
+                pred_dict['K'] = K
+                pred_list.append(pred_dict)
 
                 # Save all meshes to disk
                 if args.save_mesh:
