@@ -3,6 +3,7 @@ import torch
 import argparse
 import os
 import cv2
+import pickle
 import numpy as np
 from tqdm import tqdm
 
@@ -18,6 +19,60 @@ from vitpose_model import ViTPoseModel
 
 import json
 from typing import Dict, Optional
+
+def bbox_containment_ratio(hand_bbox, arm_bbox):
+    x1_hand, y1_hand, x2_hand, y2_hand = hand_bbox
+    x1_arm, y1_arm, x2_arm, y2_arm = arm_bbox
+
+    # 计算交集 bbox
+    x1_inter = max(x1_hand, x1_arm)
+    y1_inter = max(y1_hand, y1_arm)
+    x2_inter = min(x2_hand, x2_arm)
+    y2_inter = min(y2_hand, y2_arm)
+
+    # 计算交集面积
+    if x2_inter > x1_inter and y2_inter > y1_inter:
+        area_inter = (x2_inter - x1_inter) * (y2_inter - y1_inter)
+    else:
+        area_inter = 0
+
+    # 计算手部 bbox 面积
+    area_hand = (x2_hand - x1_hand) * (y2_hand - y1_hand)
+
+    # 计算包含比例
+    return area_inter / area_hand if area_hand > 0 else 0
+
+def get_bbox_from_mask_numpy(mask):
+    mask_2d = mask.squeeze()
+
+    ys, xs = np.where(mask_2d > 0)
+
+    if len(xs) == 0 or len(ys) == 0:
+        # print("Mask 为空！")
+        return []
+
+    # 计算 BBox
+    x1, y1 = np.min(xs), np.min(ys)
+    x2, y2 = np.max(xs), np.max(ys)
+
+    return [x1, y1, x2, y2]
+
+def get_bbobx_from_mask(mask_file, rotate_image=True):
+    bbox = {}
+    bbox_left = {}
+    bbox_right = {}
+    if os.path.exists(mask_file):
+        with open(mask_file, 'rb') as f:
+            mask_dict = pickle.load(f)
+        if rotate_image:
+            for k, v in mask_dict.items():
+                v[1] = cv2.rotate(v[1][0].astype(np.uint8), cv2.ROTATE_90_CLOCKWISE)[None, ...] # left hand 
+                v[2] = cv2.rotate(v[2][0].astype(np.uint8), cv2.ROTATE_90_CLOCKWISE)[None, ...] # right hand
+        for k, v in mask_dict.items():
+            bbox[k] = get_bbox_from_mask_numpy(v[1][0] + v[2][0])
+            bbox_left[k] = get_bbox_from_mask_numpy(v[1][0])
+            bbox_right[k] = get_bbox_from_mask_numpy(v[2][0])
+    return bbox, bbox_left, bbox_right
 
 def main():
     parser = argparse.ArgumentParser(description='HaMeR demo code')
@@ -39,6 +94,9 @@ def main():
             'data', args.img_folder, 'build', 'image')
         print('No images found in the specified folder.')
         print(f'Images will be searched in {args.img_folder}')
+    
+    mask_file = os.path.join(os.path.dirname(args.img_folder), f"mask_{os.path.basename(args.img_folder)}.pkl")
+    bboxes_mask, bbx_left, bbx_right = get_bbobx_from_mask(mask_file)
 
     # Download and load checkpoints 
     download_models(CACHE_DIR_HAMER)
@@ -53,25 +111,6 @@ def main():
     model = model.to(device)
     model.eval()
 
-    # Load detector
-    from hamer.utils.utils_detectron2 import DefaultPredictor_Lazy
-    if args.body_detector == 'vitdet':
-        from detectron2.config import LazyConfig
-        import hamer
-        cfg_path = Path(hamer.__file__).parent/'configs'/'cascade_mask_rcnn_vitdet_h_75ep.py'
-        detectron2_cfg = LazyConfig.load(str(cfg_path))
-        detectron2_cfg.train.init_checkpoint = "https://dl.fbaipublicfiles.com/detectron2/ViTDet/COCO/cascade_mask_rcnn_vitdet_h/f328730692/model_final_f05665.pkl"
-        for i in range(3):
-            detectron2_cfg.model.roi_heads.box_predictors[i].test_score_thresh = 0.25
-        detector = DefaultPredictor_Lazy(detectron2_cfg)
-    elif args.body_detector == 'regnety':
-        from detectron2 import model_zoo
-        from detectron2.config import get_cfg
-        detectron2_cfg = model_zoo.get_config('new_baselines/mask_rcnn_regnety_4gf_dds_FPN_400ep_LSJ.py', trained=True)
-        detectron2_cfg.model.roi_heads.box_predictor.test_score_thresh = 0.5
-        detectron2_cfg.model.roi_heads.box_predictor.test_nms_thresh   = 0.4
-        detector       = DefaultPredictor_Lazy(detectron2_cfg)
-
     # keypoint detector
     cpm = ViTPoseModel(device)
 
@@ -83,25 +122,24 @@ def main():
 
     # Get all demo images ends with .jpg or .png
     img_paths = [img for end in args.file_type for img in Path(args.img_folder).glob(end)]
+    img_paths.sort(key=lambda p: float(p.stem))
 
     # Iterate over all images in folder
     for i, img_path in enumerate(tqdm(img_paths, desc="Processing Images")):
         img_cv2 = cv2.imread(str(img_path))
-
-        # Detect humans in image
-        det_out = detector(img_cv2)
         img = img_cv2.copy()[:, :, ::-1]
-
-        det_instances = det_out['instances']
-        valid_idx = (det_instances.pred_classes==0) & (det_instances.scores > 0.5)
-        pred_bboxes=det_instances.pred_boxes.tensor[valid_idx].cpu().numpy()
-        pred_scores=det_instances.scores[valid_idx].cpu().numpy()
+        bboxes = bboxes_mask[img_path.name]
+        bl = bbx_left[img_path.name]
+        br = bbx_right[img_path.name]
 
         # Detect human keypoints for each person
-        vitposes_out = cpm.predict_pose(
-            img,
-            [np.concatenate([pred_bboxes, pred_scores[:, None]], axis=1)],
-        )
+        if len(bboxes) > 0:
+            vitposes_out = cpm.predict_pose(
+                img,
+                [np.concatenate([[bboxes], [[0.999]]], axis=1)],
+            )
+        else:
+            continue
 
         bboxes = []
         is_right = []
@@ -116,14 +154,16 @@ def main():
             valid = keyp[:,2] > 0.5
             if sum(valid) > 3:
                 bbox = [keyp[valid,0].min(), keyp[valid,1].min(), keyp[valid,0].max(), keyp[valid,1].max()]
-                bboxes.append(bbox)
-                is_right.append(0)
+                if bbox_containment_ratio(bbox, bl) > 0.5:
+                    bboxes.append(bbox)
+                    is_right.append(0)
             keyp = right_hand_keyp
             valid = keyp[:,2] > 0.5
             if sum(valid) > 3:
                 bbox = [keyp[valid,0].min(), keyp[valid,1].min(), keyp[valid,0].max(), keyp[valid,1].max()]
-                bboxes.append(bbox)
-                is_right.append(1)
+                if bbox_containment_ratio(bbox, br) > 0.5:
+                    bboxes.append(bbox)
+                    is_right.append(1)
 
         if len(bboxes) == 0:
             continue
@@ -182,7 +222,7 @@ def main():
                 else:
                     final_img = np.concatenate([input_patch, regression_img], axis=1)
 
-                cv2.imwrite(os.path.join(args.out_folder, f'{img_fn}_{person_id}.png'), 255*final_img[:, :, ::-1])
+                # cv2.imwrite(os.path.join(args.out_folder, f'{img_fn}_{person_id}.png'), 255*final_img[:, :, ::-1])
 
                 # Add all verts and cams to list
                 verts = out['pred_vertices'][n].detach().cpu().numpy()
